@@ -3,6 +3,8 @@ Description
 
 Variant of the spp filter in MPlayer, similar to spp=6 with 7 point DCT where only the center sample is used after IDCT.
 
+This version uses the VapourSynth API 4 (VapourSynth R55 or newer).
+
 
 Usage
 =====
@@ -24,21 +26,39 @@ Usage
   * 2 = use sse2
   * 3 = use sse4.1
 
+  The SSE code paths only exist in x86/x86_64 builds; other builds (e.g. macOS arm64) always use the C code.
+
 * planes: A list of the planes to process. By default all planes are processed.
+
+
+Installation
+============
+
+Every push builds Python wheels for Windows x64, Linux x86_64 and macOS arm64 (see `.github/workflows/build-wheels.yml`); tagged releases (`v*`) attach them to a GitHub release. The wheel installs the plugin into the VapourSynth plugin folder of the Python package, so it is autoloaded:
+
+```
+pip install vapoursynth_deblockpp7-*.whl
+```
 
 
 Compilation
 ===========
 
+Meson and Ninja are required. The VapourSynth API 4 headers are bundled in `include/vapoursynth`, a system installation of VapourSynth is optional and preferred when found.
+
 ```
-meson build
+meson setup build
 ninja -C build
 ```
 
-or
+On macOS the plugin is built as `libdeblockpp7.dylib`, which is the only extension VapourSynth autoloads there.
+
+
+Testing
+=======
+
+`test/test_deblockpp7.py` runs the plugin on synthetic clips: it checks all supported formats and modes, that the SSE2/SSE4.1 code paths match the C code, the `planes` parameter, padding of odd dimensions and parameter validation. It needs the `vapoursynth` Python module and `numpy`:
 
 ```
-./autogen.sh
-./configure
-make
+python3 test/test_deblockpp7.py build/libdeblockpp7.so
 ```
