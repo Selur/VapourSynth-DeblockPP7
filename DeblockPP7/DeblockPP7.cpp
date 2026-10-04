@@ -23,8 +23,8 @@
 #include "DeblockPP7.hpp"
 
 #ifdef VS_TARGET_CPU_X86
-template<typename T> extern void pp7Filter_sse2(const VSFrameRef *, VSFrameRef *, const DeblockPP7Data * const VS_RESTRICT, const VSAPI *) noexcept;
-template<typename T> extern void pp7Filter_sse4(const VSFrameRef *, VSFrameRef *, const DeblockPP7Data * const VS_RESTRICT, const VSAPI *) noexcept;
+template<typename T> extern void pp7Filter_sse2(const VSFrame *, VSFrame *, const DeblockPP7Data * const VS_RESTRICT, int * VS_RESTRICT, const VSAPI *) noexcept;
+template<typename T> extern void pp7Filter_sse4(const VSFrame *, VSFrame *, const DeblockPP7Data * const VS_RESTRICT, int * VS_RESTRICT, const VSAPI *) noexcept;
 #endif
 
 template<typename T, int scale>
@@ -72,15 +72,12 @@ static inline void dctB(const T * srcp, T * VS_RESTRICT dstp) noexcept {
 }
 
 template<typename T>
-static void pp7Filter_c(const VSFrameRef * src, VSFrameRef * dst, const DeblockPP7Data * const VS_RESTRICT d, const VSAPI * vsapi) noexcept {
-    const auto threadId = std::this_thread::get_id();
-    int * buffer = d->buffer.at(threadId);
-
-    for (int plane = 0; plane < d->vi->format->numPlanes; plane++) {
+static void pp7Filter_c(const VSFrame * src, VSFrame * dst, const DeblockPP7Data * const VS_RESTRICT d, int * VS_RESTRICT buffer, const VSAPI * vsapi) noexcept {
+    for (int plane = 0; plane < d->vi->format.numPlanes; plane++) {
         if (d->process[plane]) {
             const int width = vsapi->getFrameWidth(src, plane);
             const int height = vsapi->getFrameHeight(src, plane);
-            const int srcStride = vsapi->getStride(src, plane) / sizeof(T);
+            const int srcStride = static_cast<int>(vsapi->getStride(src, plane) / sizeof(T));
             const int stride = d->stride[plane];
             const T * srcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, plane));
             T * VS_RESTRICT dstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, plane));
@@ -165,15 +162,14 @@ static void pp7Filter_c(const VSFrameRef * src, VSFrameRef * dst, const DeblockP
 }
 
 template<>
-void pp7Filter_c<float>(const VSFrameRef * src, VSFrameRef * dst, const DeblockPP7Data * const VS_RESTRICT d, const VSAPI * vsapi) noexcept {
-    const auto threadId = std::this_thread::get_id();
-    float * buffer = reinterpret_cast<float *>(d->buffer.at(threadId));
+void pp7Filter_c<float>(const VSFrame * src, VSFrame * dst, const DeblockPP7Data * const VS_RESTRICT d, int * VS_RESTRICT intBuffer, const VSAPI * vsapi) noexcept {
+    float * buffer = reinterpret_cast<float *>(intBuffer);
 
-    for (int plane = 0; plane < d->vi->format->numPlanes; plane++) {
+    for (int plane = 0; plane < d->vi->format.numPlanes; plane++) {
         if (d->process[plane]) {
             const int width = vsapi->getFrameWidth(src, plane);
             const int height = vsapi->getFrameHeight(src, plane);
-            const int srcStride = vsapi->getStride(src, plane) / sizeof(float);
+            const int srcStride = static_cast<int>(vsapi->getStride(src, plane) / sizeof(float));
             const int stride = d->stride[plane];
             const float * srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(src, plane));
             float * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
@@ -259,7 +255,7 @@ static void selectFunctions(const unsigned opt, DeblockPP7Data * d) noexcept {
     const int iset = instrset_detect();
 #endif
 
-    if (d->vi->format->bytesPerSample == 1) {
+    if (d->vi->format.bytesPerSample == 1) {
         d->pp7Filter = pp7Filter_c<uint8_t>;
 
 #ifdef VS_TARGET_CPU_X86
@@ -268,7 +264,7 @@ static void selectFunctions(const unsigned opt, DeblockPP7Data * d) noexcept {
         else if ((opt == 0 && iset >= 2) || opt == 2)
             d->pp7Filter = pp7Filter_sse2<uint8_t>;
 #endif
-    } else if (d->vi->format->bytesPerSample == 2) {
+    } else if (d->vi->format.bytesPerSample == 2) {
         d->pp7Filter = pp7Filter_c<uint16_t>;
 
 #ifdef VS_TARGET_CPU_X86
@@ -289,37 +285,38 @@ static void selectFunctions(const unsigned opt, DeblockPP7Data * d) noexcept {
     }
 }
 
-static void VS_CC pp7Init(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    DeblockPP7Data * d = static_cast<DeblockPP7Data *>(*instanceData);
-    vsapi->setVideoInfo(d->vi, 1, node);
-}
-
-static const VSFrameRef *VS_CC pp7GetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    DeblockPP7Data * d = static_cast<DeblockPP7Data *>(*instanceData);
+static const VSFrame *VS_CC pp7GetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+    DeblockPP7Data * d = static_cast<DeblockPP7Data *>(instanceData);
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->node, frameCtx);
     } else if (activationReason == arAllFramesReady) {
-        try {
-            auto threadId = std::this_thread::get_id();
+        int * buffer;
 
-            if (!d->buffer.count(threadId)) {
-                int * buffer = reinterpret_cast<int *>(vs_aligned_malloc(d->stride[0] * (d->vi->height + 16 + 8) * sizeof(int), 16));
+        try {
+            const auto threadId = std::this_thread::get_id();
+            std::lock_guard<std::mutex> lock(d->bufferMutex);
+
+            auto iter = d->buffer.find(threadId);
+            if (iter == d->buffer.end()) {
+                buffer = vsh::vsh_aligned_malloc<int>(d->stride[0] * (d->vi->height + 16 + 8) * sizeof(int), 16);
                 if (!buffer)
                     throw std::string{ "malloc failure (buffer)" };
                 d->buffer.emplace(threadId, buffer);
+            } else {
+                buffer = iter->second;
             }
         } catch (const std::string & error) {
             vsapi->setFilterError(("DeblockPP7: " + error).c_str(), frameCtx);
             return nullptr;
         }
 
-        const VSFrameRef * src = vsapi->getFrameFilter(n, d->node, frameCtx);
-        const VSFrameRef * fr[] = { d->process[0] ? nullptr : src, d->process[1] ? nullptr : src, d->process[2] ? nullptr : src };
+        const VSFrame * src = vsapi->getFrameFilter(n, d->node, frameCtx);
+        const VSFrame * fr[] = { d->process[0] ? nullptr : src, d->process[1] ? nullptr : src, d->process[2] ? nullptr : src };
         const int pl[] = { 0, 1, 2 };
-        VSFrameRef * dst = vsapi->newVideoFrame2(d->vi->format, d->vi->width, d->vi->height, fr, pl, src, core);
+        VSFrame * dst = vsapi->newVideoFrame2(&d->vi->format, d->vi->width, d->vi->height, fr, pl, src, core);
 
-        d->pp7Filter(src, dst, d, vsapi);
+        d->pp7Filter(src, dst, d, buffer, vsapi);
 
         vsapi->freeFrame(src);
         return dst;
@@ -334,7 +331,7 @@ static void VS_CC pp7Free(void *instanceData, VSCore *core, const VSAPI *vsapi) 
     vsapi->freeNode(d->node);
 
     for (auto & iter : d->buffer)
-        vs_aligned_free(iter.second);
+        vsh::vsh_aligned_free(iter.second);
 
     delete d;
 }
@@ -343,34 +340,34 @@ static void VS_CC pp7Create(const VSMap *in, VSMap *out, void *userData, VSCore 
     std::unique_ptr<DeblockPP7Data> d{ new DeblockPP7Data{} };
     int err;
 
-    d->node = vsapi->propGetNode(in, "clip", 0, nullptr);
+    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
     d->vi = vsapi->getVideoInfo(d->node);
 
     const int padWidth = (d->vi->width & 15) ? 16 - d->vi->width % 16 : 0;
     const int padHeight = (d->vi->height & 15) ? 16 - d->vi->height % 16 : 0;
 
     try {
-        if (!isConstantFormat(d->vi) || (d->vi->format->sampleType == stInteger && d->vi->format->bitsPerSample > 16) ||
-            (d->vi->format->sampleType == stFloat && d->vi->format->bitsPerSample != 32))
+        if (!vsh::isConstantVideoFormat(d->vi) || (d->vi->format.sampleType == stInteger && d->vi->format.bitsPerSample > 16) ||
+            (d->vi->format.sampleType == stFloat && d->vi->format.bitsPerSample != 32))
             throw std::string{ "only constant format 8-16 bit integer and 32 bit float input supported" };
 
-        double qp = vsapi->propGetFloat(in, "qp", 0, &err);
+        double qp = vsapi->mapGetFloat(in, "qp", 0, &err);
         if (err)
             qp = 2.;
 
-        d->mode = int64ToIntS(vsapi->propGetInt(in, "mode", 0, &err));
+        d->mode = vsh::int64ToIntS(vsapi->mapGetInt(in, "mode", 0, &err));
 
-        const int opt = int64ToIntS(vsapi->propGetInt(in, "opt", 0, &err));
+        const int opt = vsh::int64ToIntS(vsapi->mapGetInt(in, "opt", 0, &err));
 
-        const int m = vsapi->propNumElements(in, "planes");
+        const int m = vsapi->mapNumElements(in, "planes");
 
         for (int i = 0; i < 3; i++)
             d->process[i] = (m <= 0);
 
         for (int i = 0; i < m; i++) {
-            const int n = int64ToIntS(vsapi->propGetInt(in, "planes", i, nullptr));
+            const int n = vsh::int64ToIntS(vsapi->mapGetInt(in, "planes", i, nullptr));
 
-            if (n < 0 || n >= d->vi->format->numPlanes)
+            if (n < 0 || n >= d->vi->format.numPlanes)
                 throw std::string{ "plane index out of range" };
 
             if (d->process[n])
@@ -390,22 +387,23 @@ static void VS_CC pp7Create(const VSMap *in, VSMap *out, void *userData, VSCore 
 
         if (padWidth || padHeight) {
             VSMap * args = vsapi->createMap();
-            vsapi->propSetNode(args, "clip", d->node, paReplace);
+            vsapi->mapSetNode(args, "clip", d->node, maReplace);
             vsapi->freeNode(d->node);
-            vsapi->propSetInt(args, "width", d->vi->width + padWidth, paReplace);
-            vsapi->propSetInt(args, "height", d->vi->height + padHeight, paReplace);
-            vsapi->propSetFloat(args, "src_width", d->vi->width + padWidth, paReplace);
-            vsapi->propSetFloat(args, "src_height", d->vi->height + padHeight, paReplace);
+            d->node = nullptr;
+            vsapi->mapSetInt(args, "width", d->vi->width + padWidth, maReplace);
+            vsapi->mapSetInt(args, "height", d->vi->height + padHeight, maReplace);
+            vsapi->mapSetFloat(args, "src_width", d->vi->width + padWidth, maReplace);
+            vsapi->mapSetFloat(args, "src_height", d->vi->height + padHeight, maReplace);
 
-            VSMap * ret = vsapi->invoke(vsapi->getPluginById("com.vapoursynth.resize", core), "Point", args);
-            if (vsapi->getError(ret)) {
-                vsapi->setError(out, vsapi->getError(ret));
+            VSMap * ret = vsapi->invoke(vsapi->getPluginByID("com.vapoursynth.resize", core), "Point", args);
+            if (vsapi->mapGetError(ret)) {
+                vsapi->mapSetError(out, vsapi->mapGetError(ret));
                 vsapi->freeMap(args);
                 vsapi->freeMap(ret);
                 return;
             }
 
-            d->node = vsapi->propGetNode(ret, "clip", 0, nullptr);
+            d->node = vsapi->mapGetNode(ret, "clip", 0, nullptr);
             d->vi = vsapi->getVideoInfo(d->node);
             vsapi->freeMap(args);
             vsapi->freeMap(ret);
@@ -413,48 +411,51 @@ static void VS_CC pp7Create(const VSMap *in, VSMap *out, void *userData, VSCore 
 
         selectFunctions(opt, d.get());
 
-        const unsigned numThreads = vsapi->getCoreInfo(core)->numThreads;
-        d->buffer.reserve(numThreads);
+        VSCoreInfo info;
+        vsapi->getCoreInfo(core, &info);
+        d->buffer.reserve(info.numThreads);
 
-        d->peak = (d->vi->format->sampleType == stInteger) ? (1 << d->vi->format->bitsPerSample) - 1 : 255;
+        d->peak = (d->vi->format.sampleType == stInteger) ? (1 << d->vi->format.bitsPerSample) - 1 : 255;
 
-        for (int plane = 0; plane < d->vi->format->numPlanes; plane++) {
-            const int width = d->vi->width >> (plane ? d->vi->format->subSamplingW : 0);
+        for (int plane = 0; plane < d->vi->format.numPlanes; plane++) {
+            const int width = d->vi->width >> (plane ? d->vi->format.subSamplingW : 0);
             d->stride[plane] = (width + 16 + 15) & ~15;
         }
 
         for (int i = 0; i < 16; i++)
             d->thresh[i] = static_cast<unsigned>((((i & 1) ? SN2 : SN0) * ((i & 4) ? SN2 : SN0) * qp * (1 << 2) - 1) * d->peak / 255.);
     } catch (const std::string & error) {
-        vsapi->setError(out, ("DeblockPP7: " + error).c_str());
+        vsapi->mapSetError(out, ("DeblockPP7: " + error).c_str());
         vsapi->freeNode(d->node);
         return;
     }
 
-    vsapi->createFilter(in, out, "DeblockPP7", pp7Init, pp7GetFrame, pp7Free, fmParallel, 0, d.release(), core);
+    DeblockPP7Data * data = d.release();
+    VSFilterDependency deps[] = { { data->node, rpStrictSpatial } };
+    vsapi->createVideoFilter(out, "DeblockPP7", data->vi, pp7GetFrame, pp7Free, fmParallel, deps, 1, data, core);
 
     if (padWidth || padHeight) {
-        VSNodeRef * node = vsapi->propGetNode(out, "clip", 0, nullptr);
+        VSNode * node = vsapi->mapGetNode(out, "clip", 0, nullptr);
         vsapi->clearMap(out);
 
         VSMap * args = vsapi->createMap();
-        vsapi->propSetNode(args, "clip", node, paReplace);
+        vsapi->mapSetNode(args, "clip", node, maReplace);
         vsapi->freeNode(node);
-        vsapi->propSetInt(args, "right", padWidth, paReplace);
-        vsapi->propSetInt(args, "bottom", padHeight, paReplace);
+        vsapi->mapSetInt(args, "right", padWidth, maReplace);
+        vsapi->mapSetInt(args, "bottom", padHeight, maReplace);
 
-        VSMap * ret = vsapi->invoke(vsapi->getPluginById("com.vapoursynth.std", core), "Crop", args);
-        if (vsapi->getError(ret)) {
-            vsapi->setError(out, vsapi->getError(ret));
+        VSMap * ret = vsapi->invoke(vsapi->getPluginByID("com.vapoursynth.std", core), "Crop", args);
+        if (vsapi->mapGetError(ret)) {
+            vsapi->mapSetError(out, vsapi->mapGetError(ret));
             vsapi->freeMap(args);
             vsapi->freeMap(ret);
             return;
         }
 
-        node = vsapi->propGetNode(ret, "clip", 0, nullptr);
+        node = vsapi->mapGetNode(ret, "clip", 0, nullptr);
         vsapi->freeMap(args);
         vsapi->freeMap(ret);
-        vsapi->propSetNode(out, "clip", node, paReplace);
+        vsapi->mapSetNode(out, "clip", node, maReplace);
         vsapi->freeNode(node);
     }
 }
@@ -462,13 +463,14 @@ static void VS_CC pp7Create(const VSMap *in, VSMap *out, void *userData, VSCore 
 //////////////////////////////////////////
 // Init
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
-    configFunc("com.holywu.pp7", "pp7", "Postprocess 7 from MPlayer", VAPOURSYNTH_API_VERSION, 1, plugin);
-    registerFunc("DeblockPP7",
-                 "clip:clip;"
-                 "qp:float:opt;"
-                 "mode:int:opt;"
-                 "opt:int:opt;"
-                 "planes:int[]:opt;",
-                 pp7Create, nullptr, plugin);
+VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
+    vspapi->configPlugin("com.holywu.pp7", "pp7", "Postprocess 7 from MPlayer", VS_MAKE_VERSION(5, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->registerFunction("DeblockPP7",
+                             "clip:vnode;"
+                             "qp:float:opt;"
+                             "mode:int:opt;"
+                             "opt:int:opt;"
+                             "planes:int[]:opt;",
+                             "clip:vnode;",
+                             pp7Create, nullptr, plugin);
 }

@@ -92,15 +92,12 @@ static inline void dctB(const T1 * srcp, T1 * dstp) noexcept {
 }
 
 template<typename T>
-void pp7Filter_sse4(const VSFrameRef * src, VSFrameRef * dst, const DeblockPP7Data * const VS_RESTRICT d, const VSAPI * vsapi) noexcept {
-    const auto threadId = std::this_thread::get_id();
-    int * buffer = d->buffer.at(threadId);
-
-    for (int plane = 0; plane < d->vi->format->numPlanes; plane++) {
+void pp7Filter_sse4(const VSFrame * src, VSFrame * dst, const DeblockPP7Data * const VS_RESTRICT d, int * VS_RESTRICT buffer, const VSAPI * vsapi) noexcept {
+    for (int plane = 0; plane < d->vi->format.numPlanes; plane++) {
         if (d->process[plane]) {
             const int width = vsapi->getFrameWidth(src, plane);
             const int height = vsapi->getFrameHeight(src, plane);
-            const int srcStride = vsapi->getStride(src, plane) / sizeof(T);
+            const int srcStride = static_cast<int>(vsapi->getStride(src, plane) / sizeof(T));
             const int stride = d->stride[plane];
             const T * srcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, plane));
             T * VS_RESTRICT dstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, plane));
@@ -184,19 +181,18 @@ void pp7Filter_sse4(const VSFrameRef * src, VSFrameRef * dst, const DeblockPP7Da
     }
 }
 
-template void pp7Filter_sse4<uint8_t>(const VSFrameRef *, VSFrameRef *, const DeblockPP7Data * const VS_RESTRICT, const VSAPI *) noexcept;
-template void pp7Filter_sse4<uint16_t>(const VSFrameRef *, VSFrameRef *, const DeblockPP7Data * const VS_RESTRICT, const VSAPI *) noexcept;
+template void pp7Filter_sse4<uint8_t>(const VSFrame *, VSFrame *, const DeblockPP7Data * const VS_RESTRICT, int * VS_RESTRICT, const VSAPI *) noexcept;
+template void pp7Filter_sse4<uint16_t>(const VSFrame *, VSFrame *, const DeblockPP7Data * const VS_RESTRICT, int * VS_RESTRICT, const VSAPI *) noexcept;
 
 template<>
-void pp7Filter_sse4<float>(const VSFrameRef * src, VSFrameRef * dst, const DeblockPP7Data * const VS_RESTRICT d, const VSAPI * vsapi) noexcept {
-    const auto threadId = std::this_thread::get_id();
-    float * buffer = reinterpret_cast<float *>(d->buffer.at(threadId));
+void pp7Filter_sse4<float>(const VSFrame * src, VSFrame * dst, const DeblockPP7Data * const VS_RESTRICT d, int * VS_RESTRICT intBuffer, const VSAPI * vsapi) noexcept {
+    float * buffer = reinterpret_cast<float *>(intBuffer);
 
-    for (int plane = 0; plane < d->vi->format->numPlanes; plane++) {
+    for (int plane = 0; plane < d->vi->format.numPlanes; plane++) {
         if (d->process[plane]) {
             const int width = vsapi->getFrameWidth(src, plane);
             const int height = vsapi->getFrameHeight(src, plane);
-            const int srcStride = vsapi->getStride(src, plane) / sizeof(float);
+            const int srcStride = static_cast<int>(vsapi->getStride(src, plane) / sizeof(float));
             const int stride = d->stride[plane];
             const float * srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(src, plane));
             float * VS_RESTRICT dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, plane));
