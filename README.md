@@ -26,7 +26,7 @@ Usage
   * 2 = use sse2
   * 3 = use sse4.1
 
-  The SSE code paths only exist in x86/x86_64 builds; other builds (e.g. macOS arm64) always use the C code.
+  The SSE code paths only exist in x86/x86_64 builds. arm64 builds (e.g. macOS on Apple Silicon) use a NEON code path instead, for every value except 1.
 
 * planes: A list of the planes to process. By default all planes are processed.
 

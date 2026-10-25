@@ -172,7 +172,7 @@ void pp7Filter_sse4(const VSFrame * src, VSFrame * dst, const DeblockPP7Data * c
                     }
                     v = (v + (1 << 17)) >> 18;
                     if (static_cast<unsigned>(v) > d->peak)
-                        v = -v >> 63;
+                        v = (v < 0) ? 0 : d->peak;
 
                     dstp[srcStride * y + x] = static_cast<T>(v);
                 }

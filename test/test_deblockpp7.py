@@ -113,8 +113,8 @@ def main():
           "block borders are smoothed (%.2f -> %.2f)" % (border_energy(inp), border_energy(out)))
 
     # 3. The SIMD code paths must match the C code path (exactly for integer
-    #    samples, closely for float samples). On non x86 builds opt=2/3 fall
-    #    back to the C code, so the comparison is trivially true there.
+    #    samples, closely for float samples). On arm64 builds opt=0/2/3 all
+    #    select the NEON code path.
     for fmt in [vs.YUV420P8, vs.YUV444P10, vs.GRAY16, vs.GRAYS]:
         src = blocky_clip(fmt)
         f = core.get_video_format(fmt)
@@ -152,7 +152,24 @@ def main():
         arr = to_arrays(pp7(clip, qp=8))
         check(all(np.allclose(a, value, atol=1e-6) for fa in arr for a in fa), "%s flat clip is unchanged" % f.name)
 
-    # 7. Parameter validation.
+    # 7. Overflowing pixels are clamped to the peak of the bit depth (not to
+    #    the 16 bit maximum): sparse full-range spikes on a smooth picture.
+    for fmt in [vs.GRAY10, vs.GRAY12]:
+        f = core.get_video_format(fmt)
+        peak = (1 << f.bits_per_sample) - 1
+        base = core.std.BlankClip(width=WIDTH, height=HEIGHT, length=1, format=fmt)
+        frame = base.get_frame(0).copy()
+        yy, xx = np.mgrid[0:HEIGHT, 0:WIDTH]
+        img = 0.5 + 0.3 * np.sin(xx * 0.05) * np.cos(yy * 0.07) + np.where((xx // 8 + yy // 8) & 1, 0.04, 0)
+        img = np.where(((xx ^ yy) & 1) & (xx % 13 == 0), np.where(yy & 2, 1.0, 0.0), img)
+        np.asarray(frame[0])[:] = np.rint(img * peak).astype(np.uint16)
+        src = core.std.ModifyFrame(base, base, lambda n, f, frame=frame: frame.copy())
+        for mode in range(3):
+            for opt in (0, 1):
+                out = np.asarray(pp7(src, qp=7.5, mode=mode, opt=opt).get_frame(0)[0])
+                check(out.max() <= peak, "%s mode=%d opt=%d clamps overflow to %d (max %d)" % (f.name, mode, opt, peak, out.max()))
+
+    # 8. Parameter validation.
     src = blocky_clip(vs.YUV420P8)
     expect_error(lambda: pp7(src, qp=0.5), "qp below 1.0 is rejected")
     expect_error(lambda: pp7(src, qp=64), "qp above 63.0 is rejected")

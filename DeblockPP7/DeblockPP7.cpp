@@ -26,6 +26,9 @@
 template<typename T> extern void pp7Filter_sse2(const VSFrame *, VSFrame *, const DeblockPP7Data * const VS_RESTRICT, int * VS_RESTRICT, const VSAPI *) noexcept;
 template<typename T> extern void pp7Filter_sse4(const VSFrame *, VSFrame *, const DeblockPP7Data * const VS_RESTRICT, int * VS_RESTRICT, const VSAPI *) noexcept;
 #endif
+#ifdef VS_TARGET_CPU_ARM_NEON
+template<typename T> extern void pp7Filter_neon(const VSFrame *, VSFrame *, const DeblockPP7Data * const VS_RESTRICT, int * VS_RESTRICT, const VSAPI *) noexcept;
+#endif
 
 template<typename T, int scale>
 static inline void dctA(const T * srcp, T * VS_RESTRICT dstp, const int stride) noexcept {
@@ -152,7 +155,7 @@ static void pp7Filter_c(const VSFrame * src, VSFrame * dst, const DeblockPP7Data
                     }
                     v = (v + (1 << 17)) >> 18;
                     if (static_cast<unsigned>(v) > d->peak)
-                        v = -v >> 63;
+                        v = (v < 0) ? 0 : d->peak;
 
                     dstp[srcStride * y + x] = static_cast<T>(v);
                 }
@@ -212,14 +215,14 @@ void pp7Filter_c<float>(const VSFrame * src, VSFrame * dst, const DeblockPP7Data
                         for (int i = 1; i < 16; i++) {
                             const unsigned threshold1 = d->thresh[i];
                             const unsigned threshold2 = threshold1 * 2;
-                            if (static_cast<unsigned>(block[i]) + threshold1 > threshold2)
+                            if (static_cast<unsigned>(static_cast<int>(block[i])) + threshold1 > threshold2)
                                 v += block[i] * d->factor[i];
                         }
                     } else if (d->mode == 1) {
                         for (int i = 1; i < 16; i++) {
                             const unsigned threshold1 = d->thresh[i];
                             const unsigned threshold2 = threshold1 * 2;
-                            if (static_cast<unsigned>(block[i]) + threshold1 > threshold2) {
+                            if (static_cast<unsigned>(static_cast<int>(block[i])) + threshold1 > threshold2) {
                                 if (block[i] > 0.f)
                                     v += (block[i] - threshold1) * d->factor[i];
                                 else
@@ -230,8 +233,8 @@ void pp7Filter_c<float>(const VSFrame * src, VSFrame * dst, const DeblockPP7Data
                         for (int i = 1; i < 16; i++) {
                             const unsigned threshold1 = d->thresh[i];
                             const unsigned threshold2 = threshold1 * 2;
-                            if (static_cast<unsigned>(block[i]) + threshold1 > threshold2) {
-                                if (static_cast<unsigned>(block[i]) + threshold2 > threshold2 * 2) {
+                            if (static_cast<unsigned>(static_cast<int>(block[i])) + threshold1 > threshold2) {
+                                if (static_cast<unsigned>(static_cast<int>(block[i])) + threshold2 > threshold2 * 2) {
                                     v += block[i] * d->factor[i];
                                 } else {
                                     if (block[i] > 0.f)
@@ -264,6 +267,10 @@ static void selectFunctions(const unsigned opt, DeblockPP7Data * d) noexcept {
         else if ((opt == 0 && iset >= 2) || opt == 2)
             d->pp7Filter = pp7Filter_sse2<uint8_t>;
 #endif
+#ifdef VS_TARGET_CPU_ARM_NEON
+        if (opt != 1)
+            d->pp7Filter = pp7Filter_neon<uint8_t>;
+#endif
     } else if (d->vi->format.bytesPerSample == 2) {
         d->pp7Filter = pp7Filter_c<uint16_t>;
 
@@ -273,6 +280,10 @@ static void selectFunctions(const unsigned opt, DeblockPP7Data * d) noexcept {
         else if ((opt == 0 && iset >= 2) || opt == 2)
             d->pp7Filter = pp7Filter_sse2<uint16_t>;
 #endif
+#ifdef VS_TARGET_CPU_ARM_NEON
+        if (opt != 1)
+            d->pp7Filter = pp7Filter_neon<uint16_t>;
+#endif
     } else {
         d->pp7Filter = pp7Filter_c<float>;
 
@@ -281,6 +292,10 @@ static void selectFunctions(const unsigned opt, DeblockPP7Data * d) noexcept {
             d->pp7Filter = pp7Filter_sse4<float>;
         else if ((opt == 0 && iset >= 2) || opt == 2)
             d->pp7Filter = pp7Filter_sse2<float>;
+#endif
+#ifdef VS_TARGET_CPU_ARM_NEON
+        if (opt != 1)
+            d->pp7Filter = pp7Filter_neon<float>;
 #endif
     }
 }
@@ -464,7 +479,7 @@ static void VS_CC pp7Create(const VSMap *in, VSMap *out, void *userData, VSCore 
 // Init
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
-    vspapi->configPlugin("com.holywu.pp7", "pp7", "Postprocess 7 from MPlayer", VS_MAKE_VERSION(5, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->configPlugin("com.holywu.pp7", "pp7", "Postprocess 7 from MPlayer", VS_MAKE_VERSION(5, 1), VAPOURSYNTH_API_VERSION, 0, plugin);
     vspapi->registerFunction("DeblockPP7",
                              "clip:vnode;"
                              "qp:float:opt;"
