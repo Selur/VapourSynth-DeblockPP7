@@ -1,7 +1,7 @@
 project('DeblockPP7', 'cpp',
   default_options : ['buildtype=release', 'b_ndebug=if-release', 'cpp_std=c++14'],
   meson_version : '>=0.64.0',
-  version : '5'
+  version : '5.1.0'
 )
 
 sources = [

@@ -479,7 +479,7 @@ static void VS_CC pp7Create(const VSMap *in, VSMap *out, void *userData, VSCore 
 // Init
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
-    vspapi->configPlugin("com.holywu.pp7", "pp7", "Postprocess 7 from MPlayer", VS_MAKE_VERSION(5, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->configPlugin("com.holywu.pp7", "pp7", "Postprocess 7 from MPlayer", VS_MAKE_VERSION(5, 1), VAPOURSYNTH_API_VERSION, 0, plugin);
     vspapi->registerFunction("DeblockPP7",
                              "clip:vnode;"
                              "qp:float:opt;"
