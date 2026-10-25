@@ -15,6 +15,10 @@
 #include "vectorclass/vectorclass.h"
 #endif
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define VS_TARGET_CPU_ARM_NEON
+#endif
+
 static constexpr int N = 1 << 16;
 static constexpr int N0 = 4;
 static constexpr int N1 = 5;

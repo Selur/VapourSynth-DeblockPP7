@@ -50,6 +50,9 @@ if host_machine.cpu_family().startswith('x86')
     cpp_args : gcc_syntax ? ['-msse4.1'] : [],
     gnu_symbol_visibility : 'hidden'
   )
+elif host_machine.cpu_family() == 'aarch64'
+  # NEON is mandatory on AArch64, so this code path needs no runtime detection or extra flags.
+  sources += 'DeblockPP7/DeblockPP7_NEON.cpp'
 endif
 
 # VapourSynth only autoloads *.dylib on macOS, while Meson defaults to *.so for modules.
